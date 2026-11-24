@@ -6,6 +6,9 @@ validate on a hand-labelled sample (>=300 images) and report agreement in the pa
 Mode A  (CarDD etc.: damage COCO, no parts)  -> parts come from a part-segmentation model
    python build_labels.py coco --images CarDD/images --ann CarDD/instances_train.json \
           --part-model runs/segment/parts/weights/best.pt --source cardd --out labels_cardd.csv
+Mode A2 (Paired COCO: damage COCO + parts COCO on the same images, e.g. lplenka)
+   python build_labels.py coco --images img --ann train/COCO_train_annos.json \
+          --parts-ann train/COCO_mul_train_annos.json --source lplenka --out labels_lplenka.csv
 Mode B  (SYNDCAR-style YOLO txt for both parts and damage)
    python build_labels.py yolo --root SYNDCAR --parts-yaml data_parts.yaml --damage-yaml data_damage.yaml \
           --source syndcar --out labels_syndcar.csv
@@ -100,42 +103,70 @@ def resolve_yolo_label(root, subdir, img, images_root):
 def coco_ann_to_mask(coco, an, h, w):
     seg = an.get("segmentation")
     if seg:
-        return coco.annToMask(an).astype(bool)
+        m = coco.annToMask(an).astype(bool)
+        if m.shape != (h, w):
+            m = cv2.resize(m.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+        return m
     bbox = an.get("bbox")
     if bbox and len(bbox) == 4:
         x, y, bw, bh = bbox
         return poly_to_mask([[x, y], [x + bw, y], [x + bw, y + bh], [x, y + bh]], h, w)
     return np.zeros((h, w), bool)
 
+def resolve_coco_image(images_dir, ann_path, file_name):
+    for cand in (
+        Path(images_dir) / file_name,
+        Path(images_dir) / Path(file_name).name,
+        Path(ann_path).parent / file_name,
+        Path(ann_path).parent / Path(file_name).name,
+    ):
+        if cand.exists():
+            return cand
+    return Path(images_dir) / file_name
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["coco", "yolo"])
-    ap.add_argument("--images"); ap.add_argument("--ann"); ap.add_argument("--part-model")
+    ap.add_argument("--images"); ap.add_argument("--ann"); ap.add_argument("--part-model"); ap.add_argument("--parts-ann")
     ap.add_argument("--root"); ap.add_argument("--parts-yaml"); ap.add_argument("--damage-yaml")
     ap.add_argument("--source", required=True); ap.add_argument("--out", required=True)
     a = ap.parse_args()
     rows = []
     if a.mode == "coco":
-        if not (a.images and a.ann and a.part_model):
-            ap.error("coco mode requires --images, --ann, and --part-model")
+        if not (a.images and a.ann and (a.part_model or a.parts_ann)):
+            ap.error("coco mode requires --images, --ann, and either --part-model or --parts-ann")
         from pycocotools.coco import COCO
-        from ultralytics import YOLO
-        coco, model = COCO(a.ann), YOLO(a.part_model)
+        coco = COCO(a.ann)
         cats = {c["id"]: c["name"] for c in coco.loadCats(coco.getCatIds())}
+        if a.parts_ann:
+            parts_coco = COCO(a.parts_ann)
+            pcats = {c["id"]: c["name"] for c in parts_coco.loadCats(parts_coco.getCatIds())}
+            p_by_name = {Path(info["file_name"]).name: pid for pid, info in parts_coco.imgs.items()}
+            model = None
+        else:
+            from ultralytics import YOLO
+            model = YOLO(a.part_model)
+            parts_coco = pcats = p_by_name = None
         for iid, info in coco.imgs.items():
-            img_path = Path(a.images) / info["file_name"]
+            img_path = resolve_coco_image(a.images, a.ann, info["file_name"])
             if not img_path.exists():
                 print(f"warning: missing image {img_path}, skipping")
                 continue
             h, w = info["height"], info["width"]
             dmg = [(cats[an["category_id"]], coco_ann_to_mask(coco, an, h, w))
                    for an in coco.loadAnns(coco.getAnnIds(imgIds=iid))]
-            r = model.predict(str(img_path), verbose=False)[0]
             parts = []
-            if r.masks is not None and r.boxes is not None:
-                for cls, xy in zip(r.boxes.cls.tolist(), r.masks.xy):
-                    if len(xy) >= 3:
-                        parts.append((model.names[int(cls)], poly_to_mask(xy, h, w)))
+            if parts_coco is not None:
+                pid = p_by_name.get(Path(info["file_name"]).name)
+                if pid is not None:
+                    parts = [(pcats[an["category_id"]], coco_ann_to_mask(parts_coco, an, h, w))
+                             for an in parts_coco.loadAnns(parts_coco.getAnnIds(imgIds=pid))]
+            else:
+                r = model.predict(str(img_path), verbose=False)[0]
+                if r.masks is not None and r.boxes is not None:
+                    for cls, xy in zip(r.boxes.cls.tolist(), r.masks.xy):
+                        if len(xy) >= 3:
+                            parts.append((model.names[int(cls)], poly_to_mask(xy, h, w)))
             lab = label_image(union_by_part(parts, h, w), dmg)
             rows.append([str(img_path), a.source] + [lab[p] for p in PARTS])
     else:

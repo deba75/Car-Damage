@@ -40,3 +40,8 @@ Baselines ResNet-50 / EfficientNet-B1 / ConvNeXt-S; ablate `--loss ce|focal`, `-
 pip install -r requirements.txt
 python smoke_test.py
 ```
+
+## Run in Google Colab
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/deba75/Car-Damage/blob/main/colab.ipynb)
+
+Open [`colab.ipynb`](colab.ipynb) in Google Colab (either via the badge above after pushing to GitHub, or by uploading `colab.ipynb` in Colab via **File → Upload notebook**), select a **GPU** runtime (**Runtime → Change runtime type → T4 GPU**), and run the cells top-to-bottom. Checkpoints and metrics are saved to Google Drive (`/content/drive/MyDrive/cardamage6/runs`).

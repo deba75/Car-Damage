@@ -161,7 +161,8 @@ def main():
     dl_tr = mk(tr, True, sampler=sm, shuffle=sm is None, drop_last=len(tr) > a.bs)
     dl_va, dl_te = mk(va, False), mk(te, False)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=1e-4)
-    sched = torch.optim.lr_scheduler.OneCycleLR(opt, a.lr, total_steps=max(a.epochs * len(dl_tr), 2), pct_start=0.25)
+    total_steps = max(a.epochs * len(dl_tr), 5)  # OneCycleLR with pct_start=0.25 needs pct_start * total_steps > 1
+    sched = torch.optim.lr_scheduler.OneCycleLR(opt, a.lr, total_steps=total_steps, pct_start=0.25)
     use_amp = dev == "cuda"
     scaler = (torch.amp.GradScaler("cuda", enabled=use_amp)
               if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler")
